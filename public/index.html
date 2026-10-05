@@ -110,15 +110,17 @@
         <span id="cutInfo"></span>
         <label class="cut-input">新切线 <input id="cutLineInput" type="number" step="1" min="1"> mm</label>
         <button id="btnConfirmCut" class="primary">确认切线（不可回退）</button>
-        <span class="hint">沿当前查看卷的水平方向裁剪；切线前已排裁片将标记为已裁。</span>
+        <span class="hint">沿当前查看卷的水平方向裁剪；切线前已排裁片将标记为已裁，并生成不可改的裁剪交接单（下方可查看/打印）。</span>
       </div>
       <div id="cutPanel"></div>
+      <div id="batchPanel"></div>
       <div id="msg"></div>
       <div id="unplacedPanel"></div>
       <div id="canvasWrap"><canvas id="cv"></canvas></div>
     </section>
   </div>
 
+  <div id="printArea"></div>
   <script src="app.js"></script>
 </body>
 </html>

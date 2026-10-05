@@ -69,6 +69,13 @@ function showApiError(err, prefix) {
   showMsg(text, true);
 }
 
+/** HTML 转义（交接单含用户输入的卷号/件名，打印与面板渲染统一走这里） */
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
 /* ================= 方案列表 ================= */
 
 async function refreshJobList(selectId) {
@@ -122,6 +129,7 @@ function renderAll() {
   renderRollTabs();
   renderCutBar();
   renderCutPanel();
+  renderBatchPanel();
   renderUnplaced();
   renderSelPanel();
   renderRevPanel();
@@ -227,10 +235,18 @@ function renderCutPanel() {
     const row = document.createElement('div');
     row.className = 'cut-roll';
     const pieces = c.cutPieces
-      .map((p) => `<span class="cchip${p.id === selectedId ? ' sel' : ''}" data-pid="${p.id}" title="(x=${p.x}, y=${p.y}, ${p.rotation}°)">${p.name}#${p.seq}</span>`)
+      .map((p) => {
+        const legacy = p.batchId == null;
+        const tip = legacy
+          ? '(x=' + p.x + ', y=' + p.y + ', ' + p.rotation + '°) 升级前已裁，无批次历史'
+          : '(x=' + p.x + ', y=' + p.y + ', ' + p.rotation + '°) 交接单 #' + p.batchId;
+        return `<span class="cchip${legacy ? ' legacy' : ''}${p.id === selectedId ? ' sel' : ''}" data-pid="${p.id}" title="${tip}">${p.name}#${p.seq}${legacy ? '（无批次历史）' : ''}</span>`;
+      })
       .join('');
     row.innerHTML =
-      `<b>卷「${c.label}」</b>：切线 <span class="cut-now">${c.cutLine}mm</span> / 卷长 ${c.length}mm，已裁 ${c.cutCount} 件：` +
+      `<b>卷「${c.label}」</b>：切线 <span class="cut-now">${c.cutLine}mm</span> / 卷长 ${c.length}mm，已裁 ${c.cutCount} 件` +
+      (c.legacyCutCount > 0 ? `<span class="cut-legacy">（其中 ${c.legacyCutCount} 件无批次历史）</span>` : '') +
+      '：' +
       (pieces ? pieces : '<span class="cut-none">无</span>');
     el.appendChild(row);
   }
@@ -241,6 +257,83 @@ function renderCutPanel() {
     };
   });
 }
+
+/* ================= 裁剪交接单（不可改批次记录，可查看/打印） ================= */
+
+/** 单张交接单卡片 HTML；forPrint=true 时不含按钮、带方案标题（用于打印区） */
+function batchCardHtml(b, forPrint) {
+  const rows = b.pieces
+    .map(
+      (p) =>
+        `<tr><td>${p.placementId}</td><td>${esc(p.name)}#${p.seq}</td><td>v${p.revision}</td>` +
+        `<td>(${p.x}, ${p.y})</td><td>${p.rotation}°</td><td>${p.bw}×${p.bh}</td>` +
+        `<td class="verts">${p.vertices.map((v) => v.join(',')).join('　')}</td></tr>`
+    )
+    .join('');
+  return (
+    `<div class="batch-head">` +
+    `<b>裁剪交接单 #${b.id}</b>（卷「${esc(b.rollLabel)}」第 ${b.seq} 张）` +
+    `<span class="dim">切线 ${b.previousCutLine} → ${b.cutLine}mm · 本次新裁 ${b.pieceCount} 件 · ${esc(b.createdAt || '')}</span>` +
+    (forPrint ? '' : `<button class="mini btn-print-batch" data-bid="${b.id}">打印</button>`) +
+    `</div>` +
+    `<table class="batch-table"><thead><tr>` +
+    `<th>裁件ID</th><th>件号</th><th>纸样版次</th><th>卷内坐标(x,y)</th><th>方向</th><th>外接mm</th><th>轮廓顶点(归一化)</th>` +
+    `</tr></thead><tbody>${rows}</tbody></table>`
+  );
+}
+
+function renderBatchPanel() {
+  const el = $('batchPanel');
+  if (!state) {
+    el.className = '';
+    el.innerHTML = '';
+    return;
+  }
+  const batches = state.cutBatches || [];
+  const legacyTotal = (state.cuts || []).reduce((s, c) => s + (c.legacyCutCount || 0), 0);
+  if (batches.length === 0 && legacyTotal === 0) {
+    el.className = '';
+    el.innerHTML = '';
+    return;
+  }
+  el.className = 'show';
+  el.innerHTML =
+    '<b>🧾 裁剪交接单（不可改，按卷与确认顺序）：</b>' +
+    (batches.length > 0 ? `<button id="btnPrintAllBatches" class="mini">打印全部（${batches.length} 张）</button>` : '');
+  if (legacyTotal > 0) {
+    const tip = document.createElement('div');
+    tip.className = 'hint';
+    tip.textContent =
+      `另有 ${legacyTotal} 件已裁件为升级前裁剪，缺少逐次切线边界，标识为「无批次历史」，不推造交接单。`;
+    el.appendChild(tip);
+  }
+  for (const b of batches) {
+    const card = document.createElement('div');
+    card.className = 'batch-card';
+    card.innerHTML = batchCardHtml(b, false);
+    card.querySelector('.btn-print-batch').onclick = () => printBatches([b.id]);
+    el.appendChild(card);
+  }
+  const allBtn = $('btnPrintAllBatches');
+  if (allBtn) allBtn.onclick = () => printBatches(batches.map((b) => b.id));
+}
+
+/** 打印指定交接单：把打印版 HTML 放入 #printArea，打印时页面其余部分隐藏 */
+function printBatches(ids) {
+  const set = new Set(ids);
+  const list = (state.cutBatches || []).filter((b) => set.has(b.id));
+  if (list.length === 0) return;
+  $('printArea').innerHTML =
+    `<h1>裁剪交接单 — 方案 #${state.job.id} ${esc(state.job.name)}</h1>` +
+    list.map((b) => `<div class="print-batch">${batchCardHtml(b, true)}</div>`).join('');
+  document.body.classList.add('printing');
+  window.print();
+}
+
+window.addEventListener('afterprint', () => {
+  document.body.classList.remove('printing');
+  $('printArea').innerHTML = '';
+});
 
 function renderUnplaced() {
   const el = $('unplacedPanel');
@@ -713,9 +806,10 @@ $('btnConfirmCut').onclick = async () => {
   try {
     const resp = await api('POST', `/api/jobs/${state.job.id}/cuts`, { rollId: r.id, cutLine: line });
     const n = resp.cut ? resp.cut.newCutCount : 0;
+    const batchInfo = resp.cut && resp.cut.batchId ? `，已生成交接单 #${resp.cut.batchId}（本卷第 ${resp.cut.batchSeq} 张，可在下方查看/打印）` : '';
     state = resp;
     delete state.cut;
-    showMsg(`已确认卷「${r.label}」切线 ${line}mm：本次新增 ${n} 件已裁，后续优化只会重排切线之后的未裁件。`, false);
+    showMsg(`已确认卷「${r.label}」切线 ${line}mm：本次新增 ${n} 件已裁${batchInfo}；后续优化只会重排切线之后的未裁件。`, false);
     $('cutLineInput').dataset.userEdit = '';
     cutInputRollId = null;
     renderAll();

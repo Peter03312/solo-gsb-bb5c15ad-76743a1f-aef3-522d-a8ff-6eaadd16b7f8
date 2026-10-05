@@ -76,7 +76,37 @@ CREATE TABLE IF NOT EXISTS placements (
   placed   INTEGER NOT NULL DEFAULT 0,
   locked   INTEGER NOT NULL DEFAULT 0,
   cut      INTEGER NOT NULL DEFAULT 0,           -- 已裁标记（已随切线前布段裁下）：卷号/位置/方向/必用卷均不可再改
+  cut_batch_id INTEGER REFERENCES cut_batches(id) ON DELETE SET NULL, -- 本件所属裁剪交接单（NULL=升级前已裁，无批次历史）
   unplaced_reason TEXT                         -- 未排入原因
+);
+
+-- 裁剪交接单：每次确认切线且确有新裁件时，与裁剪进度在同一事务内原子写入，此后不可改。
+-- 后续纸样改版、重新排样、再次裁剪均不改写已有交接单。
+CREATE TABLE IF NOT EXISTS cut_batches (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id        INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  roll_id       INTEGER NOT NULL REFERENCES rolls(id) ON DELETE CASCADE,
+  seq           INTEGER NOT NULL,        -- 该卷内确认顺序（1 起，严格递增；同卷并发由事务内重校验+本唯一约束兜底）
+  prev_cut_line INTEGER NOT NULL,        -- 本次确认前的切线位置（mm）
+  cut_line      INTEGER NOT NULL,        -- 本次确认的切线位置（mm）
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (roll_id, seq)
+);
+
+-- 交接单裁件明细：全部字段为确认时刻快照（不依赖 placements/piece_revisions 现状），
+-- 因此改版、缩减、重新排样后交接单内容保持定格。
+CREATE TABLE IF NOT EXISTS cut_batch_items (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  batch_id       INTEGER NOT NULL REFERENCES cut_batches(id) ON DELETE CASCADE,
+  placement_id   INTEGER NOT NULL,       -- 本次新裁件 ID（快照，非外键：交接单永久定格）
+  name           TEXT NOT NULL,          -- 件名快照
+  seq            INTEGER NOT NULL,       -- 件号快照
+  revision       INTEGER NOT NULL,       -- 纸样版次号快照
+  piece_revision_id INTEGER NOT NULL,    -- 纸样版次记录 id 快照
+  vertices       TEXT NOT NULL,          -- 轮廓快照（该版归一化顶点 JSON）
+  bw INTEGER NOT NULL, bh INTEGER NOT NULL, -- 外接尺寸快照
+  x INTEGER NOT NULL, y INTEGER NOT NULL,   -- 卷内坐标快照
+  rotation       INTEGER NOT NULL        -- 方向快照（0 | 180）
 );
 `);
 
@@ -90,6 +120,9 @@ CREATE INDEX IF NOT EXISTS idx_types_job       ON piece_types(job_id);
 CREATE INDEX IF NOT EXISTS idx_revs_type       ON piece_revisions(piece_type_id);
 CREATE INDEX IF NOT EXISTS idx_placements_job  ON placements(job_id);
 CREATE INDEX IF NOT EXISTS idx_placements_roll ON placements(roll_id);
+CREATE INDEX IF NOT EXISTS idx_cut_batches_job  ON cut_batches(job_id);
+CREATE INDEX IF NOT EXISTS idx_cut_batches_roll ON cut_batches(roll_id);
+CREATE INDEX IF NOT EXISTS idx_batch_items_batch ON cut_batch_items(batch_id);
 `);
 }
 
@@ -122,6 +155,10 @@ if (!hasColumn('piece_types', 'current_rev')) {
 }
 if (!hasColumn('placements', 'piece_revision_id')) {
   db.exec('ALTER TABLE placements ADD COLUMN piece_revision_id INTEGER');
+}
+if (!hasColumn('placements', 'cut_batch_id')) {
+  // 升级前已裁的件（cut=1）该列保持 NULL：缺少逐次切线边界，标识为「无批次历史」，不推造交接单
+  db.exec('ALTER TABLE placements ADD COLUMN cut_batch_id INTEGER');
 }
 
 // 旧库迁移：为每个已有型号补一条“第 1 版”纸样，并把全部已存在件挂到该版

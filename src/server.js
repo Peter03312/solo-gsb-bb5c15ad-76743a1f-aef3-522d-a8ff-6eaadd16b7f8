@@ -158,6 +158,7 @@ function jobState(jobId) {
       placed: !!p.placed,
       locked: !!p.locked,
       cut: !!p.cut,
+      cutBatchId: p.cut_batch_id == null ? null : p.cut_batch_id, // 所属裁剪交接单（null=未裁或升级前已裁无批次历史）
       allowRotate: !!p.rv_allow_rotate, // 本件所用版次的旋转许可（已裁件随旧版定格）
       bw: p.rv_bw,
       bh: p.rv_bh,
@@ -174,32 +175,94 @@ function jobState(jobId) {
       })),
     // 裁剪进度（按卷；未裁剪的卷 cutLine=0、cutPieces=[]，同样列出）
     cuts: cutSummary(rolls, placements),
+    // 裁剪交接单（不可改批次记录，按卷与确认顺序；无交接单时为空数组）
+    cutBatches: loadBatches(jobId),
   };
 }
 
 /** 组装裁剪进度：每卷切线 + 本卷已裁件（按 y、id 排序）。 */
 function cutSummary(rolls, placements) {
-  return rolls.map((r) => ({
-    rollId: r.id,
-    seq: r.seq,
-    label: r.label,
-    width: r.width,
-    length: r.length,
-    cutLine: r.cut_line,                       // 本卷切线（mm），0=尚未裁剪
-    cutCount: placements.filter((p) => p.placed && p.cut && p.roll_id === r.id).length,
-    cutPieces: placements
-      .filter((p) => p.placed && p.cut && p.roll_id === r.id)
-      .map((p) => ({
-        id: p.id,
-        name: p.name,
-        seq: p.seq,
-        x: p.x,
-        y: p.y,
-        rotation: p.rotation,
-        requiredRollId: p.required_roll_id,
-      }))
-      .sort((a, b) => a.y - b.y || a.id - b.id),
-  }));
+  return rolls.map((r) => {
+    const cutPieces = placements.filter((p) => p.placed && p.cut && p.roll_id === r.id);
+    return {
+      rollId: r.id,
+      seq: r.seq,
+      label: r.label,
+      width: r.width,
+      length: r.length,
+      cutLine: r.cut_line,                       // 本卷切线（mm），0=尚未裁剪
+      cutCount: cutPieces.length,
+      // 升级前已裁、缺少逐次切线边界的件数（无批次历史，不推造交接单）
+      legacyCutCount: cutPieces.filter((p) => p.cut_batch_id == null).length,
+      cutPieces: cutPieces
+        .map((p) => ({
+          id: p.id,
+          name: p.name,
+          seq: p.seq,
+          x: p.x,
+          y: p.y,
+          rotation: p.rotation,
+          requiredRollId: p.required_roll_id,
+          // 所属裁剪交接单 id；null = 升级前已裁，无批次历史
+          batchId: p.cut_batch_id == null ? null : p.cut_batch_id,
+        }))
+        .sort((a, b) => a.y - b.y || a.id - b.id),
+    };
+  });
+}
+
+/**
+ * 组装裁剪交接单（不可改批次记录）：按卷序号、卷内确认顺序排序。
+ * 每张单记录确认时刻快照：切线前后位置、卷号，以及本次新裁件的
+ * ID、件号、纸样版次、轮廓、坐标与方向；后续改版/重排不影响其内容。
+ */
+function loadBatches(jobId) {
+  const batches = db
+    .prepare(
+      `SELECT b.*, r.label AS roll_label, r.seq AS roll_seq
+       FROM cut_batches b JOIN rolls r ON r.id = b.roll_id
+       WHERE b.job_id = ? ORDER BY r.seq, b.seq, b.id`
+    )
+    .all(jobId);
+  const items = db
+    .prepare(
+      `SELECT i.* FROM cut_batch_items i
+       JOIN cut_batches b ON b.id = i.batch_id
+       WHERE b.job_id = ? ORDER BY i.batch_id, i.y, i.x, i.id`
+    )
+    .all(jobId);
+  const itemsByBatch = new Map();
+  for (const it of items) {
+    if (!itemsByBatch.has(it.batch_id)) itemsByBatch.set(it.batch_id, []);
+    itemsByBatch.get(it.batch_id).push({
+      placementId: it.placement_id,     // 本次新裁件 ID（快照）
+      name: it.name,
+      seq: it.seq,                      // 件号
+      revision: it.revision,            // 纸样版次号
+      pieceRevisionId: it.piece_revision_id,
+      vertices: JSON.parse(it.vertices), // 轮廓（该版归一化顶点）
+      bw: it.bw,
+      bh: it.bh,
+      x: it.x,
+      y: it.y,
+      rotation: it.rotation,            // 方向（0 | 180）
+    });
+  }
+  return batches.map((b) => {
+    const pieces = itemsByBatch.get(b.id) || [];
+    return {
+      id: b.id,
+      rollId: b.roll_id,
+      rollSeq: b.roll_seq,
+      rollLabel: b.roll_label,
+      seq: b.seq,                       // 该卷内第几张交接单（确认顺序）
+      previousCutLine: b.prev_cut_line, // 切线前位置
+      cutLine: b.cut_line,              // 本次切线位置
+      pieceCount: pieces.length,
+      pieces,
+      createdAt: b.created_at,
+    };
+  });
 }
 
 // ---------- 路由 ----------
@@ -880,7 +943,9 @@ app.get('/api/jobs/:id/cuts', (req, res) => {
  *  - 切线不得穿过任何已排的未裁件（未裁件整件位于切线之后才合法，边接触允许）；
  *  - 必须至少有一件已排未裁件整体位于切线之前（无新增已裁件视为无效操作）。
  * 确认后：本卷切线推进，切线之前的已排件全部标记为已裁；其卷号/位置/方向/必用卷此后不可再改。
- * 任一规则不满足：说明原因、返回 400/409 且原方案完全不变。
+ * 同时在【同一事务】内写入一张不可改的裁剪交接单（切线前后位置、卷号、本次新裁件快照），
+ * 并记录每件所属交接单；事务内重校验当前切线，同卷并发确认不会产生重复或倒序记录。
+ * 任一规则不满足：说明原因、返回 400/409 且原方案完全不变（含不写交接单）。
  */
 app.post('/api/jobs/:id/cuts', (req, res) => {
   const jobId = Number(req.params.id);
@@ -964,12 +1029,47 @@ app.post('/api/jobs/:id/cuts', (req, res) => {
     });
   }
 
+  // 切线推进 + 已裁标记 + 交接单（含裁件快照）在同一事务内原子写入；失败整体回滚保持原状态
+  let batch = null;
   const tx = db.transaction(() => {
+    // 事务内重校验：同卷并发确认时，后到事务看到已推进的切线即整体回滚，
+    // 保证交接单不重复、不倒序（cut_batches 另有 UNIQUE(roll_id, seq) 兜底）
+    const cur = db.prepare('SELECT cut_line FROM rolls WHERE id = ?').get(roll.id);
+    if (!cur || cutLine <= cur.cut_line) {
+      const e = new Error(
+        `切线 ${cutLine}mm 无效：本卷切线已被并发确认推进至 ${cur ? cur.cut_line : '?'}mm` +
+        `（裁剪进度不可回退，交接单不重复、不倒序），原方案不变`
+      );
+      e.status = 409;
+      throw e;
+    }
     db.prepare('UPDATE rolls SET cut_line = ? WHERE id = ?').run(cutLine, roll.id);
-    const mark = db.prepare('UPDATE placements SET cut = 1 WHERE id = ?');
-    for (const p of newlyCut) mark.run(p.id);
+    const seq = db
+      .prepare('SELECT COALESCE(MAX(seq), 0) + 1 AS s FROM cut_batches WHERE roll_id = ?')
+      .get(roll.id).s;
+    const info = db
+      .prepare('INSERT INTO cut_batches (job_id, roll_id, seq, prev_cut_line, cut_line) VALUES (?, ?, ?, ?, ?)')
+      .run(jobId, roll.id, seq, roll.cut_line, cutLine);
+    const batchId = info.lastInsertRowid;
+    // 交接单裁件明细：确认时刻快照（件号/版次/轮廓/坐标/方向），此后改版、重排均不改写
+    const insItem = db.prepare(
+      `INSERT INTO cut_batch_items
+         (batch_id, placement_id, name, seq, revision, piece_revision_id, vertices, bw, bh, x, y, rotation)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    const mark = db.prepare('UPDATE placements SET cut = 1, cut_batch_id = ? WHERE id = ?');
+    for (const p of newlyCut) {
+      insItem.run(batchId, p.id, p.name, p.seq, p.rv_rev, p.piece_revision_id, p.rv_vertices, p.rv_bw, p.rv_bh, p.x, p.y, p.rotation);
+      mark.run(batchId, p.id);
+    }
+    batch = { id: batchId, seq };
   });
-  tx();
+  try {
+    tx();
+  } catch (e) {
+    if (e && e.status === 409) return res.status(409).json({ error: e.message });
+    throw e;
+  }
   // 切线只记录裁剪进度，不改变卷占用/方案状态，无需 recompute
   const state = jobState(jobId);
   state.cut = {
@@ -979,8 +1079,43 @@ app.post('/api/jobs/:id/cuts', (req, res) => {
     cutLine,
     newCutPieceIds: newlyCut.map((p) => p.id),
     newCutCount: newlyCut.length,
+    batchId: batch.id,   // 本次生成的裁剪交接单
+    batchSeq: batch.seq, // 该卷内第几张交接单
   };
   res.json(state);
+});
+
+// ---------- 裁剪交接单（不可改批次记录） ----------
+
+/**
+ * 查询裁剪交接单：按卷序号、卷内确认顺序排列。
+ * 可选查询参数 rollId 只查某一卷。升级前已裁件缺少逐次切线边界，
+ * 不推造交接单（在 GET /api/jobs/:id/cuts 中以 batchId=null / legacyCutCount 标识）。
+ */
+app.get('/api/jobs/:id/cut-batches', (req, res) => {
+  const full = loadFull(Number(req.params.id));
+  if (!full) return res.status(404).json({ error: '方案不存在' });
+  let batches = loadBatches(full.job.id);
+  if (req.query.rollId !== undefined) {
+    const rollId = Number(req.query.rollId);
+    if (!Number.isInteger(rollId)) {
+      return res.status(400).json({ error: `rollId 查询参数必须为卷 id 整数（收到 "${req.query.rollId}"）` });
+    }
+    if (!full.rolls.some((r) => r.id === rollId)) {
+      return res.status(404).json({ error: `卷不存在：方案中没有 rollId=${rollId} 的卷` });
+    }
+    batches = batches.filter((b) => b.rollId === rollId);
+  }
+  res.json({ job: { id: full.job.id, name: full.job.name }, batches });
+});
+
+/** 查询单张裁剪交接单（用于查看/打印） */
+app.get('/api/jobs/:id/cut-batches/:bid', (req, res) => {
+  const full = loadFull(Number(req.params.id));
+  if (!full) return res.status(404).json({ error: '方案不存在' });
+  const batch = loadBatches(full.job.id).find((b) => b.id === Number(req.params.bid));
+  if (!batch) return res.status(404).json({ error: '裁剪交接单不存在' });
+  res.json({ job: { id: full.job.id, name: full.job.name }, batch });
 });
 
 // ---------- 错误处理与启动 ----------

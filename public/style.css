@@ -119,3 +119,36 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 #cutPanel .cchip:hover { background: #f3e5f5; }
 #cutPanel .cchip.sel { background: #8e24aa; color: #fff; }
+#cutPanel .cchip.legacy { border-style: dashed; border-color: #9e7fb8; color: #7a5c96; }
+#cutPanel .cut-legacy { color: #8d6e9e; font-size: 12px; }
+
+/* 裁剪交接单 */
+#batchPanel { display: none; margin: 6px 12px 0; padding: 8px 12px; background: #eef6f1; border: 1px solid #b8d8c6; border-radius: 6px; }
+#batchPanel.show { display: block; }
+#batchPanel > b { color: #1b5e20; }
+#batchPanel > .mini { margin-left: 8px; }
+#batchPanel .batch-card {
+  background: #fff; border: 1px solid #cfe3d6; border-radius: 4px;
+  padding: 6px 8px; margin: 6px 0;
+}
+#batchPanel .batch-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+#batchPanel .batch-head b { color: #2e7d32; }
+#batchPanel .batch-head .dim { font-size: 12px; color: #777; }
+#batchPanel .batch-head button { margin-left: auto; }
+.batch-table { border-collapse: collapse; width: 100%; margin-top: 4px; font-size: 12px; }
+.batch-table th, .batch-table td { border: 1px solid #ddd; padding: 2px 6px; text-align: left; }
+.batch-table th { background: #f1f8f3; color: #33691e; white-space: nowrap; }
+.batch-table td.verts { font-family: monospace; font-size: 11px; color: #555; word-break: break-all; }
+
+/* 打印交接单：仅显示打印区 */
+#printArea { display: none; }
+@media print {
+  body.printing { height: auto; display: block; background: #fff; }
+  body.printing > *:not(#printArea) { display: none !important; }
+  body.printing #printArea { display: block; padding: 12px; color: #000; }
+  #printArea h1 { font-size: 18px; margin: 0 0 10px; }
+  #printArea .print-batch { page-break-inside: avoid; margin-bottom: 16px; }
+  #printArea .batch-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+  #printArea .batch-head .dim { font-size: 12px; color: #444; }
+  #printArea .batch-table th { background: #eee; color: #000; }
+}
