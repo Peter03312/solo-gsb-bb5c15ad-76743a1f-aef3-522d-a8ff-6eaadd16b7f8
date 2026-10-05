@@ -15,6 +15,8 @@ let drag = null;           // 拖拽状态
 let rollCards = [];        // 新建表单：布卷卡片
 let pieceRows = [];        // 新建表单：裁片卡片
 let cutInputRollId = null; // 切线输入框当前对应的卷（切换卷时重置建议值）
+let batchesData = null;    // 裁剪交接单（GET /api/jobs/:id/cut-batches 返回）
+const openBatches = new Set(); // 交接单面板中已展开明细的单号
 
 const PALETTE = [
   '#f4a261', '#2a9d8f', '#e9c46a', '#8ab17d', '#577590',
@@ -88,12 +90,14 @@ async function openJob(id) {
   state = await api('GET', `/api/jobs/${id}`);
   selectedId = null;
   cutInputRollId = null;
+  openBatches.clear();
   if (!state.rolls.some((r) => r.id === currentRollId)) {
     currentRollId = state.rolls.length ? state.rolls[0].id : null;
   }
   showMsg('', false);
   fitScale();
   renderAll();
+  refreshBatches();
 }
 
 function currentRoll() {
@@ -122,6 +126,7 @@ function renderAll() {
   renderRollTabs();
   renderCutBar();
   renderCutPanel();
+  renderBatchPanel();
   renderUnplaced();
   renderSelPanel();
   renderRevPanel();
@@ -238,6 +243,95 @@ function renderCutPanel() {
     chip.onclick = () => {
       selectedId = Number(chip.dataset.pid);
       renderAll();
+    };
+  });
+}
+
+/* ================= 裁剪交接单（不可改快照，按卷与确认顺序） ================= */
+
+async function refreshBatches() {
+  if (!state) {
+    batchesData = null;
+    renderBatchPanel();
+    return;
+  }
+  try {
+    batchesData = await api('GET', `/api/jobs/${state.job.id}/cut-batches`);
+  } catch (err) {
+    batchesData = null;
+  }
+  renderBatchPanel();
+}
+
+function renderBatchPanel() {
+  const el = $('batchPanel');
+  if (!state || !batchesData || (batchesData.batches.length === 0 && batchesData.legacyCutPieces.length === 0)) {
+    el.className = '';
+    el.innerHTML = '';
+    return;
+  }
+  el.className = 'show';
+  const batches = batchesData.batches;
+  el.innerHTML =
+    '<div class="bp-head"><b>🧾 裁剪交接单（不可改，按卷与确认顺序）：</b>' +
+    (batches.length > 0
+      ? `<a class="bp-print" href="/batch.html?job=${state.job.id}" target="_blank">打印全部交接单</a>`
+      : '') +
+    '</div>';
+  // 按卷分组（接口已按卷序号、单序号排序）
+  const byRoll = new Map();
+  for (const b of batches) {
+    if (!byRoll.has(b.rollId)) byRoll.set(b.rollId, []);
+    byRoll.get(b.rollId).push(b);
+  }
+  for (const [rollId, list] of byRoll) {
+    const rollDiv = document.createElement('div');
+    rollDiv.className = 'bp-roll';
+    rollDiv.innerHTML = `<b>卷「${list[0].rollLabel}」</b>（共 ${list.length} 单）：`;
+    for (const b of list) {
+      const row = document.createElement('div');
+      row.className = 'bp-batch';
+      const open = openBatches.has(b.id);
+      row.innerHTML =
+        `<button class="mini bp-toggle" data-bid="${b.id}">${open ? '收起' : '明细'}</button> ` +
+        `<span class="bp-title">第${b.seq}单 <span class="dim">#${b.id}</span>：切线 ${b.previousCutLine} → ${b.cutLine}mm，` +
+        `新裁 ${b.pieceCount} 件，${b.createdAt}</span> ` +
+        `<a class="bp-print" href="/batch.html?job=${state.job.id}&batch=${b.id}" target="_blank">打印</a>`;
+      rollDiv.appendChild(row);
+      if (open) {
+        const tbl = document.createElement('table');
+        tbl.className = 'bp-table';
+        tbl.innerHTML =
+          '<tr><th>裁片ID</th><th>名称</th><th>件号</th><th>纸样版次</th><th>外接(mm)</th><th>坐标(x,y)</th><th>方向</th></tr>' +
+          b.pieces
+            .map(
+              (p) =>
+                `<tr><td>${p.placementId}</td><td>${p.name}</td><td>#${p.seq}</td><td>第${p.revision}版</td>` +
+                `<td>${p.bw}×${p.bh}</td><td>(${p.x}, ${p.y})</td><td>${p.rotation}°</td></tr>`
+            )
+            .join('');
+        rollDiv.appendChild(tbl);
+      }
+    }
+    el.appendChild(rollDiv);
+  }
+  // 无批次历史的已裁件（升级前已裁，缺少逐次切线边界，系统不推造交接单）
+  if (batchesData.legacyCutPieces.length > 0) {
+    const div = document.createElement('div');
+    div.className = 'bp-legacy';
+    div.innerHTML =
+      '<b>无批次历史（升级前已裁，不推造交接单）：</b>' +
+      batchesData.legacyCutPieces
+        .map((p) => `<span class="cchip">${p.name}#${p.seq}（卷「${p.rollLabel}」，(${p.x}, ${p.y}) ${p.rotation}°）</span>`)
+        .join('');
+    el.appendChild(div);
+  }
+  el.querySelectorAll('.bp-toggle').forEach((btn) => {
+    btn.onclick = () => {
+      const bid = Number(btn.dataset.bid);
+      if (openBatches.has(bid)) openBatches.delete(bid);
+      else openBatches.add(bid);
+      renderBatchPanel();
     };
   });
 }
@@ -713,12 +807,17 @@ $('btnConfirmCut').onclick = async () => {
   try {
     const resp = await api('POST', `/api/jobs/${state.job.id}/cuts`, { rollId: r.id, cutLine: line });
     const n = resp.cut ? resp.cut.newCutCount : 0;
+    const batchNo = resp.cut ? resp.cut.batchSeq : 0;
     state = resp;
     delete state.cut;
-    showMsg(`已确认卷「${r.label}」切线 ${line}mm：本次新增 ${n} 件已裁，后续优化只会重排切线之后的未裁件。`, false);
+    showMsg(
+      `已确认卷「${r.label}」切线 ${line}mm：本次新增 ${n} 件已裁，并生成该卷第 ${batchNo} 张裁剪交接单（不可改，可打印）。`,
+      false
+    );
     $('cutLineInput').dataset.userEdit = '';
     cutInputRollId = null;
     renderAll();
+    refreshBatches();
   } catch (err) {
     showApiError(err, '裁剪确认被拒绝，原方案不变');
     renderAll();
@@ -800,6 +899,8 @@ $('btnDeleteJob').onclick = async () => {
   state = null;
   selectedId = null;
   currentRollId = null;
+  batchesData = null;
+  openBatches.clear();
   await refreshJobList();
   renderAll();
   setupCanvas();

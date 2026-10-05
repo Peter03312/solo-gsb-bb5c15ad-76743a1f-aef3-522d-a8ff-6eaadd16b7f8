@@ -964,23 +964,191 @@ app.post('/api/jobs/:id/cuts', (req, res) => {
     });
   }
 
+  // 交接单明细顺序确定：按 y、placement id 排序（与进度查询一致）
+  newlyCut.sort((a, b) => a.y - b.y || a.id - b.id);
+
+  /**
+   * 裁剪进度与裁剪交接单在同一事务内原子写入：
+   * 切线推进、新裁件标记、交接单及其明细快照要么全部生效，要么整体回滚（失败保持原状态）。
+   * 事务内重读切线 + 乐观锁更新 + UNIQUE(roll_id, seq)：同卷并发确认不会产生重复或倒序记录。
+   */
   const tx = db.transaction(() => {
-    db.prepare('UPDATE rolls SET cut_line = ? WHERE id = ?').run(cutLine, roll.id);
-    const mark = db.prepare('UPDATE placements SET cut = 1 WHERE id = ?');
-    for (const p of newlyCut) mark.run(p.id);
+    const cur = db.prepare('SELECT cut_line FROM rolls WHERE id = ?').get(roll.id);
+    if (!cur || cutLine <= cur.cut_line) {
+      const e = new Error('cut line already advanced');
+      e.code = 'CUT_ADVANCED';
+      e.current = cur ? cur.cut_line : null;
+      throw e;
+    }
+    // 乐观锁：仅当切线仍为事务内读到的值时才推进（并发下只有一个确认能生效）
+    const info = db
+      .prepare('UPDATE rolls SET cut_line = ? WHERE id = ? AND cut_line = ?')
+      .run(cutLine, roll.id, cur.cut_line);
+    if (info.changes !== 1) {
+      const e = new Error('cut line already advanced');
+      e.code = 'CUT_ADVANCED';
+      e.current = cur.cut_line;
+      throw e;
+    }
+    // 标记本次新裁件；若某件已被并发确认裁下，整批回滚
+    const mark = db.prepare('UPDATE placements SET cut = 1 WHERE id = ? AND cut = 0');
+    for (const p of newlyCut) {
+      if (mark.run(p.id).changes !== 1) {
+        const e = new Error('piece already cut');
+        e.code = 'CUT_ADVANCED';
+        e.current = cur.cut_line;
+        throw e;
+      }
+    }
+    // 交接单：该卷序号严格递增（UNIQUE(roll_id, seq) 兜底，重试/并发不产生重复单）
+    const seq =
+      db.prepare('SELECT COALESCE(MAX(seq), 0) AS m FROM cut_batches WHERE roll_id = ?').get(roll.id).m + 1;
+    const batchId = db
+      .prepare(
+        'INSERT INTO cut_batches (job_id, roll_id, seq, prev_cut_line, cut_line, piece_count) VALUES (?, ?, ?, ?, ?, ?)'
+      )
+      .run(jobId, roll.id, seq, cur.cut_line, cutLine, newlyCut.length).lastInsertRowid;
+    // 明细为确认时刻快照：件号/纸样版次/轮廓/坐标/方向定格，后续改版与重排样不回写
+    const insItem = db.prepare(
+      `INSERT INTO cut_batch_items
+         (batch_id, job_id, roll_id, placement_id, piece_name, seq, revision, vertices, bw, bh, x, y, rotation)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const p of newlyCut) {
+      insItem.run(
+        batchId, jobId, roll.id, p.id, p.name, p.seq,
+        p.rv_rev, p.rv_vertices, p.rv_bw, p.rv_bh, p.x, p.y, p.rotation
+      );
+    }
+    return { batchId, batchSeq: seq, prevCutLine: cur.cut_line };
   });
-  tx();
+  let batchInfo;
+  try {
+    batchInfo = tx();
+  } catch (e) {
+    if (e && e.code === 'CUT_ADVANCED') {
+      return res.status(409).json({
+        error:
+          `切线 ${cutLine}mm 未能确认：卷「${roll.label}」的裁剪进度已被另一确认推进` +
+          `（当前切线 ${e.current}mm），本次操作已整体回滚，原方案不变`,
+      });
+    }
+    throw e;
+  }
   // 切线只记录裁剪进度，不改变卷占用/方案状态，无需 recompute
   const state = jobState(jobId);
   state.cut = {
     rollId: roll.id,
     label: roll.label,
-    previousCutLine: roll.cut_line,
+    previousCutLine: batchInfo.prevCutLine,
     cutLine,
     newCutPieceIds: newlyCut.map((p) => p.id),
     newCutCount: newlyCut.length,
+    batchId: batchInfo.batchId,   // 本次生成的裁剪交接单号（不可改）
+    batchSeq: batchInfo.batchSeq, // 该卷第几张交接单
   };
   res.json(state);
+});
+
+// ---------- 裁剪交接单（不可改快照；按卷与确认顺序查询，网页可查看并打印） ----------
+
+/** 组装一张交接单（含明细快照；明细按写入顺序即 y、placement id 排列） */
+function batchState(row, rollLabel) {
+  const items = db.prepare('SELECT * FROM cut_batch_items WHERE batch_id = ? ORDER BY id').all(row.id);
+  return {
+    id: row.id,
+    rollId: row.roll_id,
+    rollLabel,
+    seq: row.seq,                          // 该卷第几张交接单（确认顺序）
+    previousCutLine: row.prev_cut_line,    // 本次切线前位置
+    cutLine: row.cut_line,                 // 本次切线后位置
+    pieceCount: row.piece_count,
+    createdAt: row.created_at,
+    pieces: items.map((it) => ({
+      placementId: it.placement_id,        // 本次新裁件 ID
+      name: it.piece_name,
+      seq: it.seq,                         // 件号
+      revision: it.revision,               // 裁剪时纸样版次（定格）
+      vertices: JSON.parse(it.vertices),   // 裁剪时轮廓（定格）
+      bw: it.bw,
+      bh: it.bh,
+      x: it.x,
+      y: it.y,                             // 卷内坐标（定格）
+      rotation: it.rotation,               // 方向（定格）
+    })),
+  };
+}
+
+/**
+ * 查询裁剪交接单：GET /api/jobs/:id/cut-batches[?rollId=N]
+ * 按卷（卷序号）与确认顺序（单内 seq）排列；附无批次历史的已裁件（升级前已裁，
+ * 缺少逐次切线边界，系统不为其推造交接单，仅如实标识）。
+ */
+app.get('/api/jobs/:id/cut-batches', (req, res) => {
+  const jobId = Number(req.params.id);
+  const full = loadFull(jobId);
+  if (!full) return res.status(404).json({ error: '方案不存在' });
+  const { job, rolls, placements } = full;
+  const rollById = new Map(rolls.map((r) => [r.id, r]));
+
+  let rollFilter = null;
+  if (req.query.rollId !== undefined && req.query.rollId !== null && req.query.rollId !== '') {
+    rollFilter = Number(req.query.rollId);
+    if (!Number.isInteger(rollFilter) || !rollById.has(rollFilter)) {
+      return res.status(400).json({
+        error: `rollId 无效：方案中没有该卷（可用卷：${rolls.map((r) => `${r.id}=${r.label}`).join('、')}）`,
+      });
+    }
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT b.* FROM cut_batches b JOIN rolls r ON r.id = b.roll_id
+       WHERE b.job_id = ? ${rollFilter != null ? 'AND b.roll_id = ?' : ''}
+       ORDER BY r.seq, b.seq`
+    )
+    .all(...(rollFilter != null ? [jobId, rollFilter] : [jobId]));
+
+  // 无批次历史的已裁件：已裁但不在本方案任何交接单明细中（升级前已裁，不推造交接单）
+  const inBatch = new Set(
+    db.prepare('SELECT placement_id FROM cut_batch_items WHERE job_id = ?').all(jobId).map((r) => r.placement_id)
+  );
+  const legacyCutPieces = placements
+    .filter((p) => p.cut && !inBatch.has(p.id))
+    .map((p) => ({
+      placementId: p.id,
+      name: p.name,
+      seq: p.seq,
+      rollId: p.roll_id,
+      rollLabel: rollById.has(p.roll_id) ? rollById.get(p.roll_id).label : null,
+      revision: p.rv_rev,
+      x: p.x,
+      y: p.y,
+      rotation: p.rotation,
+      batchHistory: false, // 无批次历史（升级前已裁，缺少逐次切线边界）
+    }));
+
+  res.json({
+    job: { id: job.id, name: job.name },
+    batches: rows.map((row) => batchState(row, rollById.get(row.roll_id).label)),
+    legacyCutPieces,
+  });
+});
+
+/** 单张交接单详情（打印页用）：GET /api/jobs/:id/cut-batches/:bid */
+app.get('/api/jobs/:id/cut-batches/:bid', (req, res) => {
+  const jobId = Number(req.params.id);
+  const full = loadFull(jobId);
+  if (!full) return res.status(404).json({ error: '方案不存在' });
+  const row = db
+    .prepare('SELECT * FROM cut_batches WHERE id = ? AND job_id = ?')
+    .get(Number(req.params.bid), jobId);
+  if (!row) return res.status(404).json({ error: '交接单不存在' });
+  const roll = full.rolls.find((r) => r.id === row.roll_id);
+  res.json({
+    job: { id: full.job.id, name: full.job.name },
+    batch: batchState(row, roll ? roll.label : String(row.roll_id)),
+  });
 });
 
 // ---------- 错误处理与启动 ----------

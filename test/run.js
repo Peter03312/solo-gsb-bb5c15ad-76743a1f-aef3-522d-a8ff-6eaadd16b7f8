@@ -1182,6 +1182,293 @@ test('API：改版——锁定件与新轮廓、瑕疵/切线冲突的整次拒�
   })
 );
 
+// ---------------- 裁剪交接单（不可改快照，按卷与确认顺序） ----------------
+
+console.log('裁剪交接单 API');
+
+test('API：确认切线生成交接单——前后切线、卷号、新裁件 ID/件号/版次/轮廓/坐标/方向齐全', () =>
+  withServer(async (call) => {
+    const cr = await call('POST', '/api/jobs', {
+      rolls: [{ label: 'A', width: 1000, length: 4000 }, { label: 'B', width: 1000, length: 4000 }],
+      pieces: [{ name: '块', vertices: rect(0, 0, 500, 500), quantity: 3, allowRotate: true }],
+    });
+    const jobId = cr.data.job.id;
+    const A = cr.data.rolls[0].id;
+    await call('POST', `/api/jobs/${jobId}/optimize`);
+    // 布局：y0 两件、y500 一件（同一卷）
+    const cut = await call('POST', `/api/jobs/${jobId}/cuts`, { rollId: A, cutLine: 500 });
+    assert.strictEqual(cut.status, 200, JSON.stringify(cut.data));
+    assert(cut.data.cut.batchId >= 1, '响应应带交接单号');
+    assert.strictEqual(cut.data.cut.batchSeq, 1);
+
+    const list = await call('GET', `/api/jobs/${jobId}/cut-batches`);
+    assert.strictEqual(list.status, 200);
+    assert.strictEqual(list.data.batches.length, 1);
+    const b = list.data.batches[0];
+    assert.strictEqual(b.id, cut.data.cut.batchId);
+    assert.strictEqual(b.rollId, A);
+    assert.strictEqual(b.rollLabel, 'A');
+    assert.strictEqual(b.seq, 1);
+    assert.strictEqual(b.previousCutLine, 0);
+    assert.strictEqual(b.cutLine, 500);
+    assert.strictEqual(b.pieceCount, 2);
+    assert.deepStrictEqual(
+      b.pieces.map((p) => p.placementId).sort((x, y) => x - y),
+      [...cut.data.cut.newCutPieceIds].sort((x, y) => x - y)
+    );
+    for (const p of b.pieces) {
+      assert.strictEqual(p.name, '块');
+      assert.strictEqual(p.revision, 1);
+      assert.deepStrictEqual(p.vertices, rect(0, 0, 500, 500));
+      assert.strictEqual(p.bw, 500);
+      assert.strictEqual(p.bh, 500);
+      assert(Number.isInteger(p.x) && Number.isInteger(p.y));
+      assert(p.rotation === 0 || p.rotation === 180);
+      assert(Number.isInteger(p.seq) && p.seq >= 1);
+    }
+    assert.strictEqual(list.data.legacyCutPieces.length, 0);
+
+    // 单张详情接口返回同一内容
+    const one = await call('GET', `/api/jobs/${jobId}/cut-batches/${b.id}`);
+    assert.strictEqual(one.status, 200);
+    assert.strictEqual(one.data.batch.id, b.id);
+    assert.strictEqual(one.data.batch.pieces.length, 2);
+    // 不存在的交接单 404
+    assert.strictEqual((await call('GET', `/api/jobs/${jobId}/cut-batches/99999`)).status, 404);
+  })
+);
+
+test('API：多次确认按卷与确认顺序生成连续单号，切线区间链式衔接', () =>
+  withServer(async (call) => {
+    const cr = await call('POST', '/api/jobs', {
+      rolls: [{ label: 'A', width: 1000, length: 6000 }, { label: 'B', width: 1000, length: 6000 }],
+      pieces: [{ name: '块', vertices: rect(0, 0, 500, 500), quantity: 6 }],
+    });
+    const jobId = cr.data.job.id;
+    const A = cr.data.rolls[0].id;
+    const B = cr.data.rolls[1].id;
+    const op = await call('POST', `/api/jobs/${jobId}/optimize`);
+    assert.strictEqual(op.data.unplaced.length, 0);
+    // 找出各卷上的已排件，逐卷推进两次切线
+    const rollOf = new Map(op.data.placements.map((p) => [p.id, p.rollId]));
+    const usedRolls = [...new Set(op.data.placements.map((p) => p.rollId))];
+    for (const rid of usedRolls) {
+      const ys = op.data.placements.filter((p) => p.rollId === rid).map((p) => p.y);
+      const lines = [...new Set(ys)].sort((a, b) => a - b).map((y) => y + 500);
+      for (const line of lines) {
+        const r = await call('POST', `/api/jobs/${jobId}/cuts`, { rollId: rid, cutLine: line });
+        assert.strictEqual(r.status, 200, `卷 ${rid} 切线 ${line}: ` + JSON.stringify(r.data));
+      }
+    }
+    const list = await call('GET', `/api/jobs/${jobId}/cut-batches`);
+    // 按卷分组、卷内按确认顺序；每卷 seq 从 1 连续递增，区间链式衔接
+    const byRoll = new Map();
+    for (const b of list.data.batches) {
+      if (!byRoll.has(b.rollId)) byRoll.set(b.rollId, []);
+      byRoll.get(b.rollId).push(b);
+    }
+    for (const [rid, arr] of byRoll) {
+      let prev = 0;
+      arr.forEach((b, i) => {
+        assert.strictEqual(b.seq, i + 1, '单号应连续递增');
+        assert.strictEqual(b.previousCutLine, prev, '本单前切线应等于上一单切线');
+        prev = b.cutLine;
+      });
+      const roll = (await call('GET', `/api/jobs/${jobId}`)).data.rolls.find((r) => r.id === rid);
+      assert.strictEqual(roll.cutLine, prev, '卷切线应等于最后一单切线');
+    }
+    // rollId 过滤
+    const filtered = await call('GET', `/api/jobs/${jobId}/cut-batches?rollId=${A}`);
+    assert(filtered.data.batches.every((b) => b.rollId === A));
+    // 无效 rollId 400
+    assert.strictEqual((await call('GET', `/api/jobs/${jobId}/cut-batches?rollId=99999`)).status, 400);
+    assert(rollOf.size > 0 && byRoll.size >= 1);
+    assert(B !== A);
+  })
+);
+
+test('API：切线确认失败不产生交接单，方案保持原状态', () =>
+  withServer(async (call) => {
+    const cr = await call('POST', '/api/jobs', {
+      rolls: [{ label: 'A', width: 1000, length: 4000 }],
+      pieces: [{ name: '块', vertices: rect(0, 0, 500, 500), quantity: 2 }],
+    });
+    const jobId = cr.data.job.id;
+    const A = cr.data.rolls[0].id;
+    await call('POST', `/api/jobs/${jobId}/optimize`);
+    // 穿过裁片 / 无新增件 / 非整数 等各类失败
+    assert.strictEqual((await call('POST', `/api/jobs/${jobId}/cuts`, { rollId: A, cutLine: 300 })).status, 409);
+    assert.strictEqual((await call('POST', `/api/jobs/${jobId}/cuts`, { rollId: A, cutLine: 400.5 })).status, 400);
+    assert.strictEqual((await call('POST', `/api/jobs/${jobId}/cuts`, { rollId: A, cutLine: 0 })).status, 409);
+    let list = await call('GET', `/api/jobs/${jobId}/cut-batches`);
+    assert.strictEqual(list.data.batches.length, 0, '失败的确认不得产生交接单');
+    // 成功一次后再次失败也不新增
+    assert.strictEqual((await call('POST', `/api/jobs/${jobId}/cuts`, { rollId: A, cutLine: 500 })).status, 200);
+    assert.strictEqual((await call('POST', `/api/jobs/${jobId}/cuts`, { rollId: A, cutLine: 500 })).status, 409);
+    assert.strictEqual((await call('POST', `/api/jobs/${jobId}/cuts`, { rollId: A, cutLine: 700 })).status, 409); // 无新增件
+    list = await call('GET', `/api/jobs/${jobId}/cut-batches`);
+    assert.strictEqual(list.data.batches.length, 1);
+    assert.strictEqual(list.data.batches[0].cutLine, 500);
+  })
+);
+
+test('API：同卷并发确认不产生重复或倒序交接单', () =>
+  withServer(async (call) => {
+    const cr = await call('POST', '/api/jobs', {
+      rolls: [{ label: 'A', width: 1000, length: 6000 }],
+      pieces: [{ name: '块', vertices: rect(0, 0, 500, 500), quantity: 3 }],
+    });
+    const jobId = cr.data.job.id;
+    const A = cr.data.rolls[0].id;
+    await call('POST', `/api/jobs/${jobId}/optimize`);
+
+    // 1) 两个完全相同的切线并发：恰一个成功，只产生一张交接单
+    const [r1, r2] = await Promise.all([
+      call('POST', `/api/jobs/${jobId}/cuts`, { rollId: A, cutLine: 500 }),
+      call('POST', `/api/jobs/${jobId}/cuts`, { rollId: A, cutLine: 500 }),
+    ]);
+    const statuses = [r1.status, r2.status].sort();
+    assert.deepStrictEqual(statuses, [200, 409], `并发相同切线应恰一个成功：${statuses}`);
+    let list = await call('GET', `/api/jobs/${jobId}/cut-batches`);
+    assert.strictEqual(list.data.batches.length, 1, '不得产生重复交接单');
+    assert.strictEqual(list.data.batches[0].seq, 1);
+    assert.strictEqual(list.data.batches[0].cutLine, 500);
+
+    // 2) 两个不同切线并发：无论到达顺序，单号与切线区间链式衔接、不倒序
+    const [r3, r4] = await Promise.all([
+      call('POST', `/api/jobs/${jobId}/cuts`, { rollId: A, cutLine: 1500 }),
+      call('POST', `/api/jobs/${jobId}/cuts`, { rollId: A, cutLine: 1000 }),
+    ]);
+    assert([r3.status, r4.status].includes(200));
+    list = await call('GET', `/api/jobs/${jobId}/cut-batches`);
+    const arr = list.data.batches;
+    let prev = 0;
+    arr.forEach((b, i) => {
+      assert.strictEqual(b.seq, i + 1, '单号连续无重复');
+      assert.strictEqual(b.previousCutLine, prev, '切线区间链式衔接（不倒序）');
+      assert(b.cutLine > b.previousCutLine, '切线严格前进');
+      prev = b.cutLine;
+    });
+    const st = await call('GET', `/api/jobs/${jobId}`);
+    assert.strictEqual(st.data.rolls[0].cutLine, prev, '卷切线等于最后一单');
+    // 交接单覆盖的裁片与已裁件一致（无遗漏、无重复）
+    const batchedIds = arr.flatMap((b) => b.pieces.map((p) => p.placementId));
+    assert.strictEqual(new Set(batchedIds).size, batchedIds.length, '裁片不得重复出现在多张交接单');
+    const cutIds = st.data.placements.filter((p) => p.cut).map((p) => p.id);
+    assert.deepStrictEqual(batchedIds.slice().sort((a, b) => a - b), cutIds.slice().sort((a, b) => a - b));
+  })
+);
+
+test('API：纸样改版与重新排样不改写旧交接单；新交接单定格新版', () =>
+  withServer(async (call) => {
+    const cr = await call('POST', '/api/jobs', {
+      rolls: [{ label: 'A', width: 1000, length: 6000 }],
+      pieces: [{ name: '块', vertices: rect(0, 0, 400, 400), quantity: 4, allowRotate: true }],
+    });
+    const jobId = cr.data.job.id;
+    const tid = cr.data.pieceTypes[0].id;
+    const A = cr.data.rolls[0].id;
+    await call('POST', `/api/jobs/${jobId}/optimize`);
+    // 切线 400 裁下 y0 两件 → 交接单 #1（第 1 版 400×400 快照）
+    const cut1 = await call('POST', `/api/jobs/${jobId}/cuts`, { rollId: A, cutLine: 400 });
+    assert.strictEqual(cut1.status, 200);
+    const batchId1 = cut1.data.cut.batchId;
+
+    // 改版 400→500 并重新优化
+    const rv = await call('POST', `/api/jobs/${jobId}/piece-types/${tid}/revisions`, {
+      vertices: rect(0, 0, 500, 500), quantity: 4, allowRotate: true,
+    });
+    assert.strictEqual(rv.status, 200);
+    await call('POST', `/api/jobs/${jobId}/optimize`);
+
+    // 旧交接单保持第 1 版快照：轮廓、版次、坐标、方向均不改写
+    const one = await call('GET', `/api/jobs/${jobId}/cut-batches/${batchId1}`);
+    assert.strictEqual(one.status, 200);
+    for (const p of one.data.batch.pieces) {
+      assert.strictEqual(p.revision, 1, '旧交接单版次不得被改写');
+      assert.deepStrictEqual(p.vertices, rect(0, 0, 400, 400), '旧交接单轮廓不得被改写');
+      assert.strictEqual(p.bw, 400);
+      assert(p.y + 400 <= 400, '旧交接单坐标保持裁剪时位置');
+    }
+    assert.strictEqual(one.data.batch.cutLine, 400);
+
+    // 把剩余两件排好后再次确认 → 新交接单定格第 2 版轮廓
+    const op = await call('POST', `/api/jobs/${jobId}/optimize`);
+    const uncut = op.data.placements.filter((p) => !p.cut && p.placed);
+    assert(uncut.length >= 1, '应有未裁已排件');
+    const line = Math.max(...uncut.map((p) => p.y + p.bh));
+    const cut2 = await call('POST', `/api/jobs/${jobId}/cuts`, { rollId: A, cutLine: line });
+    assert.strictEqual(cut2.status, 200, JSON.stringify(cut2.data));
+    assert.strictEqual(cut2.data.cut.batchSeq, 2);
+    const two = await call('GET', `/api/jobs/${jobId}/cut-batches/${cut2.data.cut.batchId}`);
+    assert(two.data.batch.pieces.every((p) => p.revision === 2 && p.bw === 500), '新交接单应定格第 2 版');
+    // 旧单仍未被改写
+    const again = await call('GET', `/api/jobs/${jobId}/cut-batches/${batchId1}`);
+    assert(again.data.batch.pieces.every((p) => p.revision === 1 && p.bw === 400));
+  })
+);
+
+test('API：升级前已裁件标识为无批次历史，不推造交接单', () =>
+  withServer(async (call) => {
+    const cr = await call('POST', '/api/jobs', {
+      rolls: [{ label: 'A', width: 1000, length: 4000 }],
+      pieces: [{ name: '块', vertices: rect(0, 0, 500, 500), quantity: 3 }],
+    });
+    const jobId = cr.data.job.id;
+    await call('POST', `/api/jobs/${jobId}/optimize`);
+    // 模拟升级前数据：直接置已裁标记与切线，但没有任何交接单记录
+    const db = require('../src/db');
+    const st = await call('GET', `/api/jobs/${jobId}`);
+    const placed = st.data.placements.filter((p) => p.placed);
+    const legacyIds = placed.slice(0, 2).map((p) => p.id);
+    for (const pid of legacyIds) db.prepare('UPDATE placements SET cut = 1 WHERE id = ?').run(pid);
+    db.prepare('UPDATE rolls SET cut_line = 500 WHERE id = ?').run(st.data.rolls[0].id);
+
+    const list = await call('GET', `/api/jobs/${jobId}/cut-batches`);
+    assert.strictEqual(list.status, 200);
+    assert.strictEqual(list.data.batches.length, 0, '不得为旧数据推造交接单');
+    assert.strictEqual(list.data.legacyCutPieces.length, 2);
+    assert.deepStrictEqual(
+      list.data.legacyCutPieces.map((p) => p.placementId).sort((a, b) => a - b),
+      legacyIds.slice().sort((a, b) => a - b)
+    );
+    for (const p of list.data.legacyCutPieces) {
+      assert.strictEqual(p.batchHistory, false);
+      assert.strictEqual(p.rollLabel, 'A');
+      assert.strictEqual(p.revision, 1);
+    }
+    // 既有裁剪进度查询继续有效
+    const cuts = await call('GET', `/api/jobs/${jobId}/cuts`);
+    assert.strictEqual(cuts.data.cuts[0].cutCount, 2);
+    // 后续正常确认仍生成真实交接单，且与无批次历史件区分
+    const line = Math.max(...st.data.placements.filter((p) => p.placed).map((p) => p.y + p.bh));
+    const cut = await call('POST', `/api/jobs/${jobId}/cuts`, { rollId: st.data.rolls[0].id, cutLine: line });
+    assert.strictEqual(cut.status, 200, JSON.stringify(cut.data));
+    const list2 = await call('GET', `/api/jobs/${jobId}/cut-batches`);
+    assert.strictEqual(list2.data.batches.length, 1);
+    assert.strictEqual(list2.data.batches[0].previousCutLine, 500, '新单前切线接当前进度');
+    assert.strictEqual(list2.data.legacyCutPieces.length, 2, '无批次历史件保持标识');
+  })
+);
+
+test('API：删除方案级联删除其交接单', () =>
+  withServer(async (call) => {
+    const cr = await call('POST', '/api/jobs', {
+      rolls: [{ label: 'A', width: 1000, length: 4000 }],
+      pieces: [{ name: '块', vertices: rect(0, 0, 500, 500), quantity: 1 }],
+    });
+    const jobId = cr.data.job.id;
+    await call('POST', `/api/jobs/${jobId}/optimize`);
+    assert.strictEqual((await call('POST', `/api/jobs/${jobId}/cuts`, { cutLine: 500 })).status, 200);
+    const db = require('../src/db');
+    assert.strictEqual(db.prepare('SELECT COUNT(*) AS n FROM cut_batches WHERE job_id = ?').get(jobId).n, 1);
+    assert.strictEqual(db.prepare('SELECT COUNT(*) AS n FROM cut_batch_items WHERE job_id = ?').get(jobId).n, 1);
+    assert.strictEqual((await call('DELETE', `/api/jobs/${jobId}`)).status, 204);
+    assert.strictEqual(db.prepare('SELECT COUNT(*) AS n FROM cut_batches WHERE job_id = ?').get(jobId).n, 0);
+    assert.strictEqual(db.prepare('SELECT COUNT(*) AS n FROM cut_batch_items WHERE job_id = ?').get(jobId).n, 0);
+  })
+);
+
 runAll().then(() => {
   console.log(`\n${passed} 项测试${process.exitCode ? '，存在失败' : '全部通过'}。`);
 });

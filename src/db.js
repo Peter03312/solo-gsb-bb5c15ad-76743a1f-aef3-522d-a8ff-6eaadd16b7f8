@@ -78,6 +78,36 @@ CREATE TABLE IF NOT EXISTS placements (
   cut      INTEGER NOT NULL DEFAULT 0,           -- 已裁标记（已随切线前布段裁下）：卷号/位置/方向/必用卷均不可再改
   unplaced_reason TEXT                         -- 未排入原因
 );
+
+-- 裁剪交接单：每次确认切线（且确有新裁件）时与裁剪进度同一事务写入，此后不可改。
+-- 内容为确认时刻的快照：后续纸样改版、重新排样、裁片变动均不回写本表。
+CREATE TABLE IF NOT EXISTS cut_batches (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id        INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  roll_id       INTEGER NOT NULL REFERENCES rolls(id) ON DELETE CASCADE,
+  seq           INTEGER NOT NULL,        -- 该卷第几张交接单（1..，按确认顺序严格递增）
+  prev_cut_line INTEGER NOT NULL,        -- 本次确认前的切线位置（mm）
+  cut_line      INTEGER NOT NULL,        -- 本次确认的切线位置（mm）
+  piece_count   INTEGER NOT NULL,        -- 本次新裁件数（≥1；无新裁件不会生成交接单）
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (roll_id, seq)                  -- 同卷序号唯一：并发/重试不产生重复或倒序记录
+);
+
+-- 交接单明细：本次新裁件的定格快照（件号/纸样版次/轮廓/坐标/方向）
+CREATE TABLE IF NOT EXISTS cut_batch_items (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  batch_id     INTEGER NOT NULL REFERENCES cut_batches(id) ON DELETE CASCADE,
+  job_id       INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  roll_id      INTEGER NOT NULL REFERENCES rolls(id) ON DELETE CASCADE,
+  placement_id INTEGER NOT NULL,         -- 新裁件 ID（当时的 placement id；历史快照，不设外键）
+  piece_name   TEXT NOT NULL,            -- 裁片名称（定格）
+  seq          INTEGER NOT NULL,         -- 件号（该型号第几件，定格）
+  revision     INTEGER NOT NULL,         -- 裁剪时实际纸样版次（定格）
+  vertices     TEXT NOT NULL,            -- 裁剪时实际轮廓（归一化顶点 JSON，定格）
+  bw INTEGER NOT NULL, bh INTEGER NOT NULL, -- 该轮廓外接尺寸（定格）
+  x INTEGER NOT NULL, y INTEGER NOT NULL,   -- 卷内坐标（定格）
+  rotation     INTEGER NOT NULL          -- 方向 0|180（定格）
+);
 `);
 
 // 索引放在列迁移之后创建（旧库的 defects/placements 此时可能还没有 roll_id 列）
@@ -90,6 +120,10 @@ CREATE INDEX IF NOT EXISTS idx_types_job       ON piece_types(job_id);
 CREATE INDEX IF NOT EXISTS idx_revs_type       ON piece_revisions(piece_type_id);
 CREATE INDEX IF NOT EXISTS idx_placements_job  ON placements(job_id);
 CREATE INDEX IF NOT EXISTS idx_placements_roll ON placements(roll_id);
+CREATE INDEX IF NOT EXISTS idx_cut_batches_job  ON cut_batches(job_id);
+CREATE INDEX IF NOT EXISTS idx_cut_batches_roll ON cut_batches(roll_id);
+CREATE INDEX IF NOT EXISTS idx_batch_items_batch ON cut_batch_items(batch_id);
+CREATE INDEX IF NOT EXISTS idx_batch_items_job   ON cut_batch_items(job_id);
 `);
 }
 

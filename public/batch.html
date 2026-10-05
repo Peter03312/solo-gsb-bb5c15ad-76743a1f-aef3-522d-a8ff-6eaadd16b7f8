@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>裁剪交接单</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 16px;
+      font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+      font-size: 13px; color: #111; background: #eee;
+    }
+    .toolbar {
+      max-width: 900px; margin: 0 auto 12px; display: flex; gap: 10px; align-items: center;
+    }
+    .toolbar button { padding: 6px 16px; border: 1px solid #1565c0; background: #1565c0; color: #fff; border-radius: 4px; cursor: pointer; }
+    .toolbar a { color: #1565c0; }
+    .toolbar .hint { color: #666; font-size: 12px; }
+    .sheet {
+      max-width: 900px; margin: 0 auto 16px; padding: 20px 24px;
+      background: #fff; border: 1px solid #999; page-break-inside: avoid;
+    }
+    .sheet h1 { font-size: 20px; text-align: center; margin: 0 0 4px; letter-spacing: 6px; }
+    .sheet .sub { text-align: center; color: #555; font-size: 12px; margin-bottom: 12px; }
+    .meta { display: flex; flex-wrap: wrap; border: 1px solid #333; border-bottom: none; }
+    .meta > div { padding: 6px 10px; border-right: 1px solid #333; flex: 1 1 180px; }
+    .meta > div:last-child { border-right: none; }
+    .meta .k { color: #666; font-size: 11px; display: block; }
+    .meta .v { font-weight: 600; }
+    table { width: 100%; border-collapse: collapse; margin-top: 0; }
+    th, td { border: 1px solid #333; padding: 5px 6px; text-align: center; }
+    th { background: #f0f0f0; }
+    td.shape { width: 90px; }
+    canvas.thumb { display: block; margin: 0 auto; }
+    .sign { display: flex; gap: 40px; margin-top: 14px; }
+    .sign > div { flex: 1; border-bottom: 1px solid #333; padding: 18px 4px 2px; color: #555; }
+    .note { margin-top: 10px; color: #666; font-size: 11px; }
+    .legacy { max-width: 900px; margin: 0 auto 16px; padding: 14px 24px; background: #fff8e1; border: 1px solid #c8a415; page-break-inside: avoid; }
+    .legacy h2 { font-size: 15px; margin: 0 0 8px; }
+    .err { max-width: 900px; margin: 40px auto; padding: 16px; background: #ffebee; border: 1px solid #ef9a9a; color: #b71c1c; }
+    @media print {
+      body { background: #fff; padding: 0; }
+      .toolbar { display: none; }
+      .sheet { border-color: #000; margin: 0 0 10mm; max-width: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <button id="btnPrint">打印</button>
+    <a href="/">← 返回排样系统</a>
+    <span class="hint">交接单为切线确认时刻的不可改快照；随打印件一同交接存档。</span>
+  </div>
+  <div id="root"><div class="sheet">加载中……</div></div>
+  <script src="batch.js"></script>
+</body>
+</html>

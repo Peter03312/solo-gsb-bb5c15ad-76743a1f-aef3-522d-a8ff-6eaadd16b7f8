@@ -119,3 +119,27 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 #cutPanel .cchip:hover { background: #f3e5f5; }
 #cutPanel .cchip.sel { background: #8e24aa; color: #fff; }
+
+/* 裁剪交接单面板 */
+#batchPanel { display: none; margin: 6px 12px 0; padding: 8px 12px; background: #eef6ee; border: 1px solid #a5c8a8; border-radius: 6px; }
+#batchPanel.show { display: block; }
+#batchPanel .bp-head { display: flex; align-items: center; gap: 12px; color: #1b5e20; }
+#batchPanel .bp-head b { font-size: 13px; }
+#batchPanel .bp-print { font-size: 12px; color: #1565c0; text-decoration: none; }
+#batchPanel .bp-print:hover { text-decoration: underline; }
+#batchPanel .bp-roll { padding: 5px 0; border-bottom: 1px dashed #c3d9c5; font-size: 13px; }
+#batchPanel .bp-roll:last-child { border-bottom: none; }
+#batchPanel .bp-roll > b { color: #2e7d32; }
+#batchPanel .bp-batch { padding: 3px 0 3px 14px; }
+#batchPanel .bp-title { color: #333; }
+#batchPanel .bp-title .dim { color: #888; font-size: 12px; }
+#batchPanel .bp-table {
+  margin: 4px 0 6px 14px; border-collapse: collapse; font-size: 12px; background: #fff;
+}
+#batchPanel .bp-table th, #batchPanel .bp-table td { border: 1px solid #b9d2bc; padding: 2px 8px; }
+#batchPanel .bp-table th { background: #e2efe3; }
+#batchPanel .bp-legacy { margin-top: 6px; padding: 6px 8px; background: #fff8e1; border: 1px solid #e0c97f; border-radius: 4px; font-size: 12px; color: #6d4c00; }
+#batchPanel .bp-legacy .cchip {
+  display: inline-block; margin: 2px 4px 0 0; padding: 1px 8px;
+  background: #fff; border: 1px solid #c8a415; border-radius: 10px; font-size: 12px;
+}
