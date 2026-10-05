@@ -1,0 +1,15 @@
+services:
+  app:
+    build: .
+    container_name: fabric-nesting
+    ports:
+      - "3000:3000"          # 宿主机端口:容器端口，左侧可改
+    environment:
+      - PORT=3000            # 容器内监听端口
+      - DATA_DIR=/app/data   # SQLite 数据目录
+    volumes:
+      - nesting-data:/app/data   # 数据持久化
+    restart: unless-stopped
+
+volumes:
+  nesting-data:

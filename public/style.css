@@ -1,0 +1,121 @@
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  font-size: 14px;
+  color: #222;
+  background: #f4f5f7;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+header {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 8px 16px; background: #263238; color: #fff;
+}
+header h1 { font-size: 18px; margin: 0; }
+.job-bar { display: flex; align-items: center; gap: 8px; }
+.job-bar select { min-width: 280px; max-width: 480px; padding: 4px; }
+
+#main { display: flex; flex: 1; min-height: 0; }
+#sidebar {
+  width: 340px; min-width: 340px; overflow-y: auto;
+  padding: 10px; background: #eceff1; border-right: 1px solid #ccc;
+}
+.panel { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 10px 12px; margin-bottom: 12px; }
+.panel h2 { font-size: 15px; margin: 4px 0 10px; }
+.panel h3 { font-size: 13px; margin: 12px 0 6px; display: flex; justify-content: space-between; align-items: center; }
+.row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+.row label { width: 110px; color: #555; flex: none; }
+.row input[type=text], .row input[type=number], .row select { flex: 1; min-width: 0; padding: 4px 6px; }
+.row.btns { justify-content: flex-end; gap: 8px; margin-top: 10px; }
+
+button { padding: 5px 12px; border: 1px solid #bbb; background: #fff; border-radius: 4px; cursor: pointer; }
+button:hover { background: #f0f0f0; }
+button.primary { background: #1565c0; border-color: #1565c0; color: #fff; }
+button.primary:hover { background: #0d47a1; }
+button.danger { background: #c62828; border-color: #c62828; color: #fff; }
+button.mini { padding: 1px 8px; font-size: 12px; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.defect-row, .piece-card, .roll-card { border: 1px dashed #bbb; border-radius: 4px; padding: 6px; margin: 6px 0; }
+.defect-row { display: flex; gap: 4px; align-items: center; }
+.defect-row input { width: 58px; padding: 3px 4px; }
+.defect-row .lbl { font-size: 12px; color: #777; }
+.roll-card { border-style: solid; border-color: #90a4ae; background: #f7fafb; }
+.roll-head { display: flex; gap: 6px; align-items: center; }
+.roll-head .roll-label { flex: 1; padding: 4px 6px; font-weight: 600; }
+.roll-dims { display: flex; gap: 10px; align-items: center; margin: 6px 0 2px; font-size: 13px; }
+.roll-dims input { width: 80px; padding: 3px 4px; }
+.roll-defects .defect-row { background: #fff; }
+.piece-card input[type=text] { width: 100%; margin-bottom: 4px; padding: 4px 6px; }
+.piece-card textarea { width: 100%; height: 76px; font-family: monospace; font-size: 12px; padding: 4px 6px; }
+#revVerts { width: 100%; height: 96px; font-family: monospace; font-size: 12px; padding: 4px 6px; margin: 6px 0; }
+.piece-card .sub { display: flex; gap: 10px; align-items: center; margin-top: 4px; font-size: 13px; }
+.piece-card .sub input[type=number] { width: 64px; }
+.piece-card .reqrow { display: flex; gap: 8px; align-items: center; margin-top: 6px; font-size: 13px; color: #555; }
+.piece-card .reqrow select { flex: 1; padding: 3px 4px; }
+.hint { font-size: 12px; color: #888; }
+
+#rollTabs { display: none; gap: 6px; flex-wrap: wrap; padding: 6px 12px 0; }
+#rollTabs.show { display: flex; }
+.rolltab { text-align: left; padding: 4px 10px; border: 1px solid #b0bec5; border-radius: 6px; background: #f2f6f8; }
+.rolltab.active { background: #1565c0; border-color: #1565c0; color: #fff; }
+.rolltab .dim { font-size: 11px; opacity: 0.75; margin-left: 4px; }
+.rolltab .ulen { display: block; font-size: 11px; color: #2e7d32; }
+.rolltab .idle { display: block; font-size: 11px; color: #999; }
+.rolltab.active .ulen, .rolltab.active .idle { color: #d7ecff; }
+
+#workspace { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+#toolbar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 12px; background: #fff; border-bottom: 1px solid #ddd;
+}
+#toolbar .spacer { flex: 1; }
+.badge { padding: 3px 10px; border-radius: 10px; font-size: 13px; background: #9e9e9e; color: #fff; }
+.badge.draft { background: #9e9e9e; }
+.badge.partial { background: #ef6c00; }
+.badge.complete { background: #2e7d32; }
+#usedLen { color: #444; }
+
+#msg { display: none; margin: 8px 12px 0; padding: 8px 12px; border-radius: 4px; white-space: pre-line; }
+#msg.error { display: block; background: #ffebee; border: 1px solid #ef9a9a; color: #b71c1c; }
+#msg.info { display: block; background: #e8f5e9; border: 1px solid #a5d6a7; color: #1b5e20; }
+
+#unplacedPanel { display: none; margin: 8px 12px 0; padding: 8px 12px; background: #fff8e1; border: 1px solid #ffe082; border-radius: 4px; }
+#unplacedPanel.show { display: block; }
+#unplacedPanel .chip {
+  display: inline-block; margin: 3px 4px 0 0; padding: 2px 8px;
+  background: #fff; border: 1px solid #ffb300; border-radius: 10px; cursor: pointer; font-size: 13px;
+}
+#unplacedPanel .chip:hover { background: #fff3cd; }
+#unplacedPanel .chip.sel { background: #ffb300; color: #fff; }
+
+#canvasWrap { flex: 1; overflow: auto; margin: 8px 12px 12px; background: #dfe3e6; border: 1px solid #ccc; }
+#cv { display: block; cursor: default; }
+
+/* 裁剪进度 */
+#cutBar {
+  display: none; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 6px 12px 0; padding: 6px 12px; background: #fff; border: 1px solid #b0bec5; border-radius: 6px;
+}
+#cutBar.show { display: flex; }
+#cutBar .cut-title { font-weight: 600; color: #5d4037; white-space: nowrap; }
+#cutInfo { color: #5d4037; font-size: 13px; }
+#cutBar .cut-input { display: flex; align-items: center; gap: 4px; font-size: 13px; color: #555; }
+#cutBar .cut-input input { width: 90px; padding: 4px 6px; }
+
+#cutPanel { display: none; margin: 6px 12px 0; padding: 8px 12px; background: #f3eef7; border: 1px solid #ceb8dd; border-radius: 6px; }
+#cutPanel.show { display: block; }
+#cutPanel .cut-roll { padding: 5px 0; border-bottom: 1px dashed #d5c6e0; font-size: 13px; }
+#cutPanel .cut-roll:last-child { border-bottom: none; }
+#cutPanel .cut-roll b { color: #4a148c; }
+#cutPanel .cut-now { color: #6a1b9a; }
+#cutPanel .cut-none { color: #999; }
+#cutPanel .cchip {
+  display: inline-block; margin: 2px 4px 0 0; padding: 1px 8px;
+  background: #fff; border: 1px solid #8e24aa; border-radius: 10px; font-size: 12px; cursor: pointer;
+}
+#cutPanel .cchip:hover { background: #f3e5f5; }
+#cutPanel .cchip.sel { background: #8e24aa; color: #fff; }

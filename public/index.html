@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>布料裁片排样系统</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>布料裁片排样系统</h1>
+    <div class="job-bar">
+      <label>方案：</label>
+      <select id="jobSelect"><option value="">（请选择）</option></select>
+      <button id="btnDeleteJob" class="danger">删除方案</button>
+    </div>
+  </header>
+
+  <div id="main">
+    <aside id="sidebar">
+      <section class="panel">
+        <h2>新建排样方案</h2>
+        <div class="row">
+          <label>名称</label>
+          <input id="fName" type="text" placeholder="例如：秋季夹克 M 码">
+        </div>
+
+        <h3>布卷（同一订单可多卷）<button id="btnAddRoll" class="mini">＋添加卷</button></h3>
+        <div id="rollList"></div>
+        <p class="hint">每卷登记：卷号、布幅宽度、可用长度及该卷矩形瑕疵区。卷号在同一方案内唯一。</p>
+
+        <h3>裁片型号 <button id="btnAddPiece" class="mini">＋添加</button></h3>
+        <div id="pieceList"></div>
+
+        <div class="row btns">
+          <button id="btnSample">填入示例</button>
+          <button id="btnCreate" class="primary">创建方案</button>
+        </div>
+      </section>
+
+      <section class="panel" id="selPanel" style="display:none">
+        <h2>选中裁片</h2>
+        <div id="selInfo"></div>
+        <div class="row" id="selRollRow">
+          <label>目标卷</label>
+          <select id="selRoll"></select>
+        </div>
+        <div class="row">
+          <label>卷内 x (mm)</label><input id="selX" type="number" step="1">
+        </div>
+        <div class="row">
+          <label>卷内 y (mm)</label><input id="selY" type="number" step="1">
+        </div>
+        <div class="row">
+          <label>方向</label>
+          <select id="selRot">
+            <option value="0">0°（原方向）</option>
+            <option value="180">180°</option>
+          </select>
+        </div>
+        <div class="row" id="selReqRollRow">
+          <label>必用卷</label>
+          <select id="selReqRoll"></select>
+        </div>
+        <div class="row">
+          <label><input id="selLocked" type="checkbox"> 锁定（优化时固定）</label>
+        </div>
+        <div class="row btns">
+          <button id="btnApplyMove" class="primary">应用位置</button>
+          <button id="btnUnplace">移回未排区</button>
+        </div>
+        <p class="hint">提示：也可直接在画布上拖动裁片（跨卷请先在上方选目标卷再应用位置；锁定件需先解锁）。已裁件（✂）的卷号、位置、方向与必用卷均不可再改。</p>
+      </section>
+
+      <section class="panel" id="revPanel" style="display:none">
+        <h2>改版纸样（按型号）</h2>
+        <div class="row">
+          <label>裁片型号</label>
+          <select id="revType"></select>
+        </div>
+        <div id="revInfo" class="hint"></div>
+        <textarea id="revVerts" placeholder="新轮廓顶点，每行一个：x,y（整数mm）&#10;0,0&#10;600,0&#10;600,900&#10;0,900"></textarea>
+        <div class="row">
+          <label>目标总件数</label>
+          <input id="revQty" type="number" min="1" step="1">
+        </div>
+        <div class="row">
+          <label><input id="revRotate" type="checkbox"> 允许旋转 180°</label>
+        </div>
+        <div class="row btns">
+          <button id="btnLoadCurrent">读入当前轮廓</button>
+          <button id="btnRevise" class="primary">提交改版</button>
+        </div>
+        <p class="hint">已裁件继续使用旧轮廓、卷号坐标与裁剪清单均不变；其余同型号件改用新轮廓。缩减先删未排件、再按 ID 降序删未锁定已排件，已裁/锁定件不删；扩增件进入未排区。锁定件须在原位满足新轮廓，否则整次拒绝。</p>
+      </section>
+    </aside>
+
+    <section id="workspace">
+      <div id="toolbar">
+        <button id="btnOptimize" class="primary" disabled>优化排样（未锁定部分）</button>
+        <span id="statusBadge" class="badge">未加载方案</span>
+        <span id="usedLen"></span>
+        <span class="spacer"></span>
+        <button id="btnZoomOut">－</button>
+        <button id="btnZoomIn">＋</button>
+      </div>
+      <div id="rollTabs"></div>
+      <div id="cutBar">
+        <span class="cut-title">✂ 裁剪进度</span>
+        <span id="cutInfo"></span>
+        <label class="cut-input">新切线 <input id="cutLineInput" type="number" step="1" min="1"> mm</label>
+        <button id="btnConfirmCut" class="primary">确认切线（不可回退）</button>
+        <span class="hint">沿当前查看卷的水平方向裁剪；切线前已排裁片将标记为已裁。</span>
+      </div>
+      <div id="cutPanel"></div>
+      <div id="msg"></div>
+      <div id="unplacedPanel"></div>
+      <div id="canvasWrap"><canvas id="cv"></canvas></div>
+    </section>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
